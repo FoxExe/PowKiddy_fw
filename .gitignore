@@ -2,3 +2,4 @@ Thumbs.db
 desktop.ini
 *_DATA/
 /tmp/
+__pycache__
