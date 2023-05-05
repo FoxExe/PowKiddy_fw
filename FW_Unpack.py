@@ -7,12 +7,22 @@ import os
 from io import BufferedReader
 from lib.utils import calc_checksum, print_hex
 
-BLOCK_SIZE = 512
-CHUNK_SIZE = 1024 * 1024  # Must be multiple by 4!
 
+ENC_PATTERN = b'\x11\x22\x33\x44\x55\x66\x77\x88\x99\xAA\xBB\xCC\xDD\xEE\xFF\x75'
+FW_PATTERN = 'SFDNABDWFTCA'
 
-parser = argparse.ArgumentParser(description='PowKiddy firmware unpacker')
-parser.add_argument('fw', nargs='?', type=argparse.FileType('rb'), default=sys.stdin)
+HEADER_SIZE = 64
+F_INFO_SIZE = 64
+FS_FILE_EXT = {
+	'FW': 'bin',
+	'FAT16': 'FAT16.img',
+	'FAT32': 'FAT32.img',
+	'EXT4': 'EXT4.img',
+	'ZIP': 'zip',
+}
+
+parser = argparse.ArgumentParser(description='Actions PAD .fw unpacker')
+parser.add_argument('fw', nargs='?', type=argparse.FileType('rb'))
 args = parser.parse_args()
 
 src_file: BufferedReader = args.fw
@@ -22,100 +32,52 @@ src_dir = os.path.dirname(src_file.name)
 dir = os.path.join(src_dir, src_name + "_DATA")
 os.makedirs(dir, exist_ok=True)
 
+magic, header_size, items = struct.unpack('<16sL16xB27x', src_file.read(HEADER_SIZE))
+magic = magic.decode().strip('\x00')
 
-# 64 bytes of package header (2048 bytes total. Last 4 bytes - CRC)
-#
-#  50 41 54 4f 32 2e 30 2e 30 30 2e 32 32 31 31 32 33 2e 30 32 30 34 00 00 00 00 00 00 00 00 00 00
-# | P  A  T  O| 2  .  0  .  0  0  .  2  2  1  1  2  3  .  0  2  0  4                              |
-#  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 05 00 00 00
-#                                                                                     | 5 items   |
+print("=" * 64)
+print("  File:", src_name)
+print(" Items:", items)
+print(" Magic:", magic)
+print("=" * 64)
+print('|# | File name      | FS     | Offset     | Size       |')
+#     ' 12 1234567890123456 12345678 123456789012 123456789012 '
 
-
-# Get file size
-src_file.seek(0, os.SEEK_END)
-fw_size = src_file.tell()
-
-# Read header data
-src_file.seek(0)
-magic, fv_version, items_count = struct.unpack('<4s56sL', src_file.read(64))
-fv_version = fv_version.decode().strip('\x00')  # Decode into regular string
-
-src_file.seek(0)
-header = src_file.read(2044)
-header_crc = struct.unpack('<4s', src_file.read(4))[0]
-
-crc = calc_checksum(header)
-if crc != header_crc:
-	print("Error: Wrong header CRC:", print_hex(crc), "!=", print_hex(header_crc))
-	exit(1)
-
-#   	0	1	2	3	4	5	6	7	8	9	A	B	C	D	E	F
-#  B	░	▒	▓	│	┤	╡	╢	╖	╕	╣	║	╗	╝	╜	╛	┐
-#  C	└	┴	┬	├	─	┼	╞	╟	╚	╔	╩	╦	╠	═	╬	╧
-#  D	╨	╤	╥	╙	╘	╒	╓	╫	╪	┘	┌	█	▄	▌	▐	▀
-
-print('╔' + '═' * 73 + '╗')
-print(f'║ File    : {os.path.basename(src_file.name): <32}' + ' ' * 30 + '║')
-print(f'║ Version : {fv_version}' + ' ' * 44 + '║')
-print(f'║ Size    :{fw_size:< 10}' + ' ' * 53 + '║')
-print(f'║ CRC     : {print_hex(header_crc)}' + ' ' * 54 + '║')
-print(f'║ Items   : {items_count: <2}' + ' ' * 60 + '║')
-print('╚' + '═' * 73 + '╝')
-
-print('╔═════════════════════════════════╤═════════╤═════════╤════╤════╤═════════╗')
-print('║ FILE_NAME                       │    SIZE │  OFFSET │TYPE│PART│   CRC   ║')
-print('╠═════════════════════════════════╧═════════╧═════════╧════╧════╧═════════╣')
-#     '| uboot.bin                             2048      2048  RAW  1   11FEFF00 |'
-
-next_offset = 64  # Header end, items info start
-for i in range(items_count):
-	# 64 bytes header of data partition
-	#
-	#  75 62 6f 6f 74 2e 62 69 6e 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-	# | u  b  o  o  t  .  b  i  n                                                                     |
-	#  01 01 00 00 f1 04 00 00 04 00 00 00 b4 ce c3 8c 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-	# |FL|PN|-----|    SIZE   |  OFFSET   |   CRC32   |                   UNUSED                      |
-
-	# NOTE: Size and Offset storead as sectors/blocks count, not bytes!
-
+next_offset = HEADER_SIZE
+p_num = 0
+for i in range(items):
 	src_file.seek(next_offset)
-	file_name, flag, partition, size, offset, crc, sep = struct.unpack('<32sBBxxLL4s16s', src_file.read(64))
-	next_offset += 64
+	name, fs_type, offset, size = struct.unpack('<16s8sL4xL28x', src_file.read(F_INFO_SIZE))
+
+	# Text cleanup
+	name = name.decode().strip('\x00')
+	fs_type = fs_type.decode().strip('\x00')
+
+	next_offset += F_INFO_SIZE
+	p_num += 1
+
+	print(F' {p_num: <2} {name: <16} {fs_type: <8} {offset: <12} {size: <12}')
 
 	# Decode data
-	file_name = file_name.decode().strip('\x00')
-	offset = offset * BLOCK_SIZE
-	size = size * BLOCK_SIZE
-
-	p_type = "RAW" if flag else "IMG"
-	print(f'║ {file_name: <32} {offset: >9} {size: >9}  {p_type}  {partition: <3} {print_hex(crc)} ║')
-
-	if flag:
-		f_num = f"RAW.{partition}"
-	else:
-		f_num = partition
-
 	src_file.seek(offset)  # Go to begin of file
-	crc_data = 0  # Start data CRC
-	with open(f'{dir}/{f_num}.{file_name}', 'wb') as f:
-		parts = int(size / CHUNK_SIZE)
-		remain = size % CHUNK_SIZE
 
-		for part in range(parts):
-			data = src_file.read(CHUNK_SIZE)
-			for pos in range(0, len(data) >> 2):
-				crc_data += int.from_bytes(data[pos * 4: pos * 4 + 4], 'little', signed=False)
-			f.write(data)
+	if fs_type == "FW":
+		p_magic, p_size = struct.unpack('<12sL', src_file.read(16))
 
-		data = src_file.read(remain)
+		# Encrypted data
+		magic, enc_data_size, enc_sector_size = struct.unpack('<16sLL', src_file.read(32))
+		if magic != ENC_PATTERN:
+			print("Sorry, but i support only encryption v4...")
+			continue
 
-		for pos in range(0, len(data) >> 2):
-			crc_data += int.from_bytes(data[pos * 4: pos * 4 + 4], 'little', signed=False)
-		f.write(data)
+		with open(f'{dir}/{p_num}.{name}.bin', 'wb') as f:
+			f.write(src_file.read(p_size))
 
-		crc_data = (crc_data & 0xFFFFFFFF).to_bytes(4, 'little', signed=False)
-		if crc_data != crc:
-			print("Error: Wrong CRC:", print_hex(crc_data))
-			exit(1)
+		# Hmm... there is disk image after encrypted partition
+		with open(f'{dir}/{p_num}.{name}.img', 'wb') as f:
+			f.write(src_file.read(size - p_size - 16))
 
-print('╚═════════════════════════════════════════════════════════════════════════╝')
+	else:
+		# Save data as file
+		with open(f'{dir}/{p_num}.{name}.{FS_FILE_EXT[fs_type]}', 'wb') as f:
+			f.write(src_file.read(size))
