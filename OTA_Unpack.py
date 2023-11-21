@@ -5,7 +5,7 @@ import struct
 import sys
 import os
 from io import BufferedReader
-from lib.utils import calc_checksum, print_hex
+from lib.utils import calc_checksum
 
 BLOCK_SIZE = 512
 CHUNK_SIZE = 1024 * 1024  # Must be multiple by 4!
@@ -46,7 +46,7 @@ header_crc = struct.unpack('<4s', src_file.read(4))[0]
 
 crc = calc_checksum(header)
 if crc != header_crc:
-	print("Error: Wrong header CRC:", print_hex(crc), "!=", print_hex(header_crc))
+	print("Error: Wrong header CRC:", crc.hex(), "!=", header_crc.hex())
 	exit(1)
 
 #   	0	1	2	3	4	5	6	7	8	9	A	B	C	D	E	F
@@ -58,7 +58,7 @@ print('╔' + '═' * 73 + '╗')
 print(f'║ File    : {os.path.basename(src_file.name): <61} ║')
 print(f'║ Version : {fv_version:<32}' + ' ' * 30 + '║')
 print(f'║ Size    :{fw_size:< 10}' + ' ' * 53 + '║')
-print(f'║ CRC     : {print_hex(header_crc)}' + ' ' * 54 + '║')
+print(f'║ CRC     : {header_crc.hex()}' + ' ' * 54 + '║')
 print(f'║ Items   : {items_count: <2}' + ' ' * 60 + '║')
 print('╚' + '═' * 73 + '╝')
 
@@ -88,7 +88,7 @@ for i in range(items_count):
 	size = size * BLOCK_SIZE
 
 	p_type = "RAW" if flag else "IMG"
-	print(f'║ {file_name: <32} {offset: >9} {size: >9}  {p_type}  {partition: <3} {print_hex(crc)} ║')
+	print(f'║ {file_name: <32} {offset: >9} {size: >9}  {p_type}  {partition: <3} {crc.hex()} ║')
 
 	if flag:
 		f_num = f"RAW.{partition}"
@@ -115,7 +115,7 @@ for i in range(items_count):
 
 		crc_data = (crc_data & 0xFFFFFFFF).to_bytes(4, 'little', signed=False)
 		if crc_data != crc:
-			print("Error: Wrong CRC:", print_hex(crc_data))
+			print("Error: Wrong CRC:", crc_data.hex())
 			exit(1)
 
 print('╚═════════════════════════════════════════════════════════════════════════╝')
