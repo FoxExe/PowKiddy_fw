@@ -7,7 +7,7 @@ import sys
 import os
 
 import lib.image_codecs as image_codecs
-from lib.utils import calc_checksum, print_hex
+from lib.utils import DataReader
 
 
 RES_TYPES = {
@@ -38,10 +38,14 @@ src_file: BufferedReader
 for src_file in args.files:
 	src_name = os.path.basename(src_file.name)
 	src_dir = os.path.dirname(src_file.name)
+	src_ext = os.path.splitext(src_file.name)[1].lower()
 
 	if not src_file or not src_file.readable:
 		print(src_name, "is not readable!")
 		exit(2)
+
+	if src_ext not in ('.res', '.str'):
+		continue
 
 	dir = os.path.join(src_dir, src_name + "_DATA")
 	os.makedirs(dir, exist_ok=True)
@@ -52,80 +56,81 @@ for src_file in args.files:
 	#   R  E  S  .  .  .  .  A  .  .  .  .  .  .  .  .
 	# |   MAGIC   |IC|             UNKNOWN            |
 
-	f_type, res_version, items_count, unkn_byte_1, unkn_byte_2, unkn_byte_3, unk_str = struct.unpack(
-		'<3sBBBBB8s', src_file.read(16))
+	file = DataReader(src_file.name)
+	f_type = file.read_string(3)
+	res_version = file.read_int(1)
+	items_count = file.read_int(2)
+	unkn_byte_1 = file.read_int(2)  # 0x00c0 ... or 0xc000 (int)?
+	# v2.0.00.230822.1430
+	fv_ver_1 = file.read_int(1)  # 0
+	fv_ver_2 = file.read_int(1)  # 2
+	fv_ver_3 = file.read_int(1)  # 0
+	fv_ver_4 = file.read_int(1)  # 0
+	fv_ver_5 = file.read_int(1)  # 0  Maybe 4 bytes CRC? But always zero...
+	fv_ver_6 = file.read_int(1)  # 0
+	fv_ver_7 = file.read_int(1)  # 0
+	fv_ver_8 = file.read_int(1)  # 0
+
 	print(f'## {src_name}: {items_count} item(s):')
 	print('  | FILE    | OFFSET   | SIZE | RESOURCE TYPE')
 	#     ' - 123456789 1234567890 123456 12345678901234567890123456789012'
-	if f_type.decode() != 'RES':
-		print("ERROR: Not a resource")
-		exit(3)
+	if f_type == 'RES':
+		last_pos = file.get_pos()
+		resources = {}
+		for i in range(items_count):
+			file.set_pos(last_pos)
+			#  40 03 00 00 f3 00 08 50 49 43 31 00 00 00 00 00
+			# |  << 832   | 243 | 8| P  I  C  1               |
+			# |FILE OFFSET|SIZE |RT|         File name        |
+			data_offset = file.read_int(4)
+			data_lenght = file.read_int(2)
+			res_type = file.read_int(1)
+			file_name = file.read_string(9)
+			last_pos = file.get_pos()  # Save current position for next header record
 
-	resources = {}
-	curr_offset = 16
-	for i in range(items_count):
-		src_file.seek(curr_offset)  # Go to last saved offset
-		#  40 03 00 00 f3 00 08 50 49 43 31 00 00 00 00 00
-		# |  << 832   | 243 | 8| P  I  C  1               |
-		# |FILE OFFSET|SIZE |RT|         File name        |
-		data_offset, data_lenght, res_type, file_name = struct.unpack('<LHB9s', src_file.read(16))
-		curr_offset += 16
+			print(f' - {file_name: <9} {data_offset: <10} {data_lenght: <6} {RES_TYPES[res_type]: <32}')
 
-		file_name = file_name.decode().rstrip('\x00')
-		print(
-			f' - {file_name: <9} {data_offset: <10} {data_lenght: <6} {RES_TYPES[res_type]: <32}')
+			# Go to file position
+			file.set_pos(data_offset)
 
-		src_file.seek(data_offset)  # Go to file start
-		data = src_file.read(data_lenght)  # Read file
+			if res_type in (3, 4):
+				# Text string
+				with open(f"{dir}/{file_name}.txt", "wb") as out:
+					out.write(file.read_bytes(data_lenght - 1))  # End byte is null
 
-		if res_type in (3, 4):
-			# Text string
-			print(" >", data.decode()[:128])
-			with open(f"{dir}/{file_name}.txt", "wb") as out:
-				out.write(data[:-1])
-			continue
+			elif res_type == 5:
+				# Image
+				width = file.read_int(2)
+				height = file.read_int(2)
+				size = width * height * 3
+				# if size > data_lenght:
+				#	size = data_lenght - 4
+				img = Image.frombytes("RGBA", (width, height), file.read_bytes(size), image_codecs.RES_PNG)
+				img.save(f"{dir}/{file_name}.png")
 
-		if res_type == 5:
-			# Image
-			width, height = struct.unpack('<HH', data[:4])
-			size = width * height * 3
+			elif res_type in (7, 8):
+				# Animation/compressed image
+				width = file.read_int(2)
+				height = file.read_int(2)
+				size = file.read_int(4)
 
-			if size != data_lenght:
-				src_file.seek(data_offset)
-				data = src_file.read(size + 4)  # Plus 4 bytes of width/height info
+				img = Image.frombytes(
+					"RGB" if res_type == 7 else "RGBA",
+					(width, height),
+					file.read_bytes(size),
+					image_codecs.RES_GZIP_PNG
+				)
 
-			# Save as png image
-			img = Image.frombytes("RGBA", (width, height), data[4:], image_codecs.RES_PNG)
-			img.save(f"{dir}/{file_name}.png")
-			continue
+				img.save(f"{dir}/{file_name}.png")
 
-		if res_type in (7, 8):
-			# Animation/compressed image
-			width, height, size = struct.unpack('<HHL', data[:8])
+			elif res_type == 11:
+				# Image, 32 bit, RGBA
+				width = file.read_int(2)
+				height = file.read_int(2)
+				size = width * height * 4
+				img = Image.frombytes("RGBA", (width, height), file.read_bytes(size))
+				img.save(f"{dir}/{file_name}.png")
 
-			img = Image.frombytes(
-				"RGB" if res_type == 7 else "RGBA",
-				(width, height),
-				data[8:],
-				image_codecs.RES_GZIP_PNG
-			)
-
-			img.save(f"{dir}/{file_name}.png")
-			continue
-
-		if res_type == 11:
-			# Image, 32 bit, RGBA
-			width, height = struct.unpack('<HH', data[:4])
-			size = width * height * 4
-
-			src_file.seek(data_offset + 4)
-
-			img = Image.frombytes("RGBA", (width, height), src_file.read(size))
-			img.save(f"{dir}/{file_name}.png")
-			continue
-
-		print("\tUNKNOWN DATA:", print_hex(data))
-		with open(f"{dir}/{file_name}.bin", "wb") as out:
-			out.write(data)
-
-	src_file.close()
+			else:
+				with open(f"{dir}/{file_name}.bin", "wb") as out:
+					out.write(file.read_bytes(data_lenght))
