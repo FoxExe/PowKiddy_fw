@@ -2,32 +2,15 @@ from PIL import Image
 from io import BufferedReader
 
 import argparse
-import struct
-import sys
 import os
 
 import lib.image_codecs as image_codecs
+from lib.Resources import RES_TYPES
 from lib.utils import DataReader
 
 
-RES_TYPES = {
-	0x00: 'UNKNOWN 00',
-	0x01: 'UNKNOWN 01',
-	0x02: 'UNKNOWN 02',
-	0x03: 'Localisation string, UTF8',
-	0x04: 'UNKNOWN 04',
-	0x05: 'RGB-565 Image',
-	0x06: 'UNKNOWN 06',
-	0x07: 'RGB-565 gzip image',
-	0x08: 'RGBA-565 gzip image',
-	0x09: 'UNKNOWN 09',
-	0x0A: 'UNKNOWN 10',
-	0x0B: 'RGB-8888 (RGBA) image',  # 11
-}
-
-
-parser = argparse.ArgumentParser(description='PowKiddy RESource unpacker')
-parser.add_argument('files', nargs='+', type=argparse.FileType('rb'))
+parser = argparse.ArgumentParser(description='Actions PAD resource unpacker')
+parser.add_argument('files', nargs='+', type=argparse.FileType('rb'), help="Files for unpack (.res or .str)")
 args = parser.parse_args()
 
 if len(args.files) == 0:
@@ -36,26 +19,27 @@ if len(args.files) == 0:
 
 src_file: BufferedReader
 for src_file in args.files:
-	src_name = os.path.basename(src_file.name)
+	src_fullname = os.path.basename(src_file.name)
 	src_dir = os.path.dirname(src_file.name)
-	src_ext = os.path.splitext(src_file.name)[1].lower()
+	src_name, src_ext = os.path.splitext(src_fullname)
+	src_ext = src_ext.lower()
 
 	if not src_file or not src_file.readable:
-		print(src_name, "is not readable!")
+		print(src_fullname, "is not readable!")
 		exit(2)
 
 	if src_ext not in ('.res', '.str'):
 		continue
 
-	dir = os.path.join(src_dir, src_name + "_DATA")
-	os.makedirs(dir, exist_ok=True)
+	if src_ext == '.str':
+		# This is a string resource.
+		loc_file = open(f"{src_dir}/{src_name}.txt", "wt", encoding='utf-8')
+	else:
+		loc_file = None
+		dir = os.path.join(src_dir, src_fullname + "_DATA")
+		os.makedirs(dir, exist_ok=True)
 
 	# Read header info
-	#          25 24      192     2
-	#  52 45 53 19 18 00 00 c0 00 02 00 00 00 00 00 00
-	#   R  E  S  .  .  .  .  A  .  .  .  .  .  .  .  .
-	# |   MAGIC   |IC|             UNKNOWN            |
-
 	file = DataReader(src_file.name)
 	f_type = file.read_string(3)
 	res_version = file.read_int(1)
@@ -71,7 +55,7 @@ for src_file in args.files:
 	fv_ver_7 = file.read_int(1)  # 0
 	fv_ver_8 = file.read_int(1)  # 0
 
-	print(f'## {src_name}: {items_count} item(s):')
+	print(f'## {src_fullname}: {items_count} item(s):')
 	print('  | FILE    | OFFSET   | SIZE | RESOURCE TYPE')
 	#     ' - 123456789 1234567890 123456 12345678901234567890123456789012'
 	if f_type == 'RES':
@@ -94,9 +78,14 @@ for src_file in args.files:
 			file.set_pos(data_offset)
 
 			if res_type in (3, 4):
-				# Text string
-				with open(f"{dir}/{file_name}.txt", "wb") as out:
-					out.write(file.read_bytes(data_lenght - 1))  # End byte is null
+				if loc_file:
+					#loc_file.write(f"{file_name}[{RES_TYPES[res_type]}]: {file.read_string(data_lenght)}\n")
+					string = file.read_string(data_lenght).replace('\n', '\\n').replace('\r', '\\r')
+					loc_file.write(f"{file_name}={string}\n")
+				else:
+					# Text string
+					with open(f"{dir}/{file_name}.{RES_TYPES[res_type]}.txt", "wb") as out:
+						out.write(file.read_bytes(data_lenght - 1))  # End byte is null
 
 			elif res_type == 5:
 				# Image
@@ -106,7 +95,7 @@ for src_file in args.files:
 				# if size > data_lenght:
 				#	size = data_lenght - 4
 				img = Image.frombytes("RGBA", (width, height), file.read_bytes(size), image_codecs.RES_PNG)
-				img.save(f"{dir}/{file_name}.png")
+				img.save(f"{dir}/{file_name}.{RES_TYPES[res_type]}.png")
 
 			elif res_type in (7, 8):
 				# Animation/compressed image
@@ -121,7 +110,7 @@ for src_file in args.files:
 					image_codecs.RES_GZIP_PNG
 				)
 
-				img.save(f"{dir}/{file_name}.png")
+				img.save(f"{dir}/{file_name}.{RES_TYPES[res_type]}.png")
 
 			elif res_type == 11:
 				# Image, 32 bit, RGBA
@@ -129,8 +118,11 @@ for src_file in args.files:
 				height = file.read_int(2)
 				size = width * height * 4
 				img = Image.frombytes("RGBA", (width, height), file.read_bytes(size))
-				img.save(f"{dir}/{file_name}.png")
+				img.save(f"{dir}/{file_name}.{RES_TYPES[res_type]}.png")
 
 			else:
-				with open(f"{dir}/{file_name}.bin", "wb") as out:
+				with open(f"{dir}/{file_name}.{RES_TYPES[res_type]}.bin", "wb") as out:
 					out.write(file.read_bytes(data_lenght))
+
+	if loc_file:
+		loc_file.close()

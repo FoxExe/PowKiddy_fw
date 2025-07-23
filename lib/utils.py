@@ -1,4 +1,5 @@
 import os
+import io
 from math import floor
 
 
@@ -34,16 +35,30 @@ def size_human(size: int, limit: int = 2):
 	return f'{fmt_str} {sz[factor]}B'
 
 
-class DataReader:
-	_int_byteorder = 'little'
+class BytesReader(io.BytesIO):
+	def __init__(self, initial_bytes=..., order: str = 'little'):
+		super().__init__(initial_bytes)
+		self.int_byteorder = order
 
-	def __init__(self, file_name: str) -> None:
+	def read_int(self, size: int, signed: bool = False):
+		return int.from_bytes(self.read(size), self.int_byteorder, signed=signed)
+
+	def read_string(self, size: int, codepage: str = 'utf-8'):
+		return self.read(size).decode(codepage).strip('\x00')
+
+	def __len__(self):
+		return self.getbuffer().nbytes
+
+
+class DataReader:
+	def __init__(self, file_name: str, order: str = 'little') -> None:
 		self._file = open(file_name, 'rb')
 		self.file_name = os.path.basename(self._file.name)
 		self.file_path = os.path.dirname(self._file.name)
 		self._file.seek(0, os.SEEK_END)  # Got to end of file
 		self.file_size = self._file.tell()
 		self._file.seek(0)  # Go to start of file
+		self._int_byteorder = order
 
 	def get_pos(self):
 		return self._file.tell()

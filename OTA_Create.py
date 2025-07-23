@@ -6,7 +6,7 @@ import sys
 import os
 from io import BufferedReader
 from datetime import datetime
-from lib.utils import calc_checksum, print_hex
+from lib.utils import calc_checksum
 
 BLOCK_SIZE = 512
 CHUNK_SIZE = 1024 * 1024  # Must be multiple by 4!
@@ -73,7 +73,7 @@ with open('update.zip', 'wb') as fw:
 			print(f"Error on \"{os.path.basename(fd.name)}\": File size must be a multiple of {BLOCK_SIZE} ({size})")
 			exit(1)
 
-		print(f'> {name: <32} {size: >9} {print_hex(crc)}')
+		print(f'> {name: <32} {size: >9} {crc.hex()}')
 		header += struct.pack("<32sBBxxLL4s16s", name.encode('ASCII'), flag, part, size_b, offset_b, crc, b'\x00')
 		offset += size  # Calculate next offset
 
